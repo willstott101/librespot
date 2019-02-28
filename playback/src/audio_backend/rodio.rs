@@ -1,10 +1,13 @@
 use super::{Open, Sink};
 extern crate rodio;
+use std::time::Duration;
 use std::io;
 use std::process::exit;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 pub struct RodioSink {
     rodio_sink: rodio::Sink,
+    send: Option<SyncSender<i16>>,
 }
 
 fn list_outputs() {
@@ -58,28 +61,86 @@ impl Open for RodioSink {
                 exit(0)
             }
         }
-        let sink = rodio::Sink::new(&rodio_device);
 
-        RodioSink {
+        let sink = rodio::Sink::new(&rodio_device);
+        let source = RodioSink {
             rodio_sink: sink,
-        }
+            send: None,
+        };
+
+        source
     }
 }
 
 impl Sink for RodioSink {
     fn start(&mut self) -> io::Result<()> {
+        //                  100ms = 2 * 4410
+        let (tx, rx) = sync_channel(2 * 4096);
+        self.send = Some(tx);
+        let source = LibrespotSource {
+            recv: rx,
+        };
+        self.rodio_sink.append(source);
         self.rodio_sink.play();
         Ok(())
     }
 
     fn stop(&mut self) -> io::Result<()> {
-        self.rodio_sink.stop();
+        self.send = None;
         Ok(())
     }
 
     fn write(&mut self, data: &[i16]) -> io::Result<()> {
-        let source = rodio::buffer::SamplesBuffer::new(2, 44100, data);
-        self.rodio_sink.append(source);
+        match self.send {
+            Some(ref sender) => {
+                for s in data.iter() {
+                    let r = sender.send(*s);
+                    if r.is_err() {
+                        return Err(io::Error::new(io::ErrorKind::BrokenPipe, "Rodio Sink: Reciever disconnected."));
+                    } else {
+                        r.unwrap();
+                    }
+                }
+            },
+            None => (),
+        }
         Ok(())
+    }
+}
+
+
+struct LibrespotSource {
+    recv: Receiver<i16>,
+}
+
+impl Iterator for LibrespotSource {
+    type Item = i16;
+
+    #[inline]
+    fn next(&mut self) -> Option<i16> {
+        let mut queue_iter = self.recv.try_iter();
+        queue_iter.next()
+    }
+}
+
+impl rodio::Source for LibrespotSource {
+    #[inline]
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+
+    #[inline]
+    fn channels(&self) -> u16 {
+        2
+    }
+
+    #[inline]
+    fn sample_rate(&self) -> u32 {
+        44100
+    }
+
+    #[inline]
+    fn total_duration(&self) -> Option<Duration> {
+        None
     }
 }
