@@ -4,13 +4,21 @@ extern crate crc;
 use protobuf_codegen_pure::Customize;
 use regex::Regex;
 use std::path::Path;
-use std::fs::{read, read_to_string, write};
+use std::fs::File;
+use std::io::prelude::*;
 use crc::crc32::checksum_ieee;
 
-fn main() {
-    let line_re = Regex::new(r"pub mod (?P<name>\w+);(?: ?/?/? ?(?P<CRC>\d+)?)?\n?").unwrap();
+fn read_to_string(path: String) -> Option<std::string::String> {
+    let mut file = File::open(path).unwrap();
+    let mut f_str = String::new();
+    file.read_to_string(&mut f_str).unwrap();
+    Some(f_str)
+}
 
-    let mut lib_str = read_to_string("src/lib.rs").unwrap();
+fn main() {
+    let line_re = Regex::new(r"pub mod (?P<name>\w+);(?: ?/?/? ?(?P<CRC>\d+)?)?(?P<crlf>\r?\n)").unwrap();
+
+    let mut lib_str = read_to_string("src/lib.rs".to_string()).unwrap();
     let mut changed = false;
 
     for cap in line_re.captures_iter(&lib_str.clone()) {
@@ -20,7 +28,8 @@ fn main() {
         let mut regen = !Path::new(dest).exists();
 
         let path = &format!("proto/{}.proto", name);
-        let new_crc = checksum_ieee(&read(path).unwrap()).to_string();
+        let contents = read_to_string(path.to_string()).unwrap().replace("\r\n", "\n");
+        let new_crc = checksum_ieee(&contents.into_bytes()).to_string();
         if !regen {
             match cap.name("CRC") {
                 Some(crc) => regen = crc.as_str() != new_crc,
@@ -38,7 +47,8 @@ fn main() {
             }).expect("protoc");
 
             changed = true;
-            lib_str = lib_str.replace(&cap[0], &format!("pub mod {}; // {}\n", name, new_crc));
+            let line_ending = cap.name("crlf").unwrap().as_str();
+            lib_str = lib_str.replace(&cap[0], &format!("pub mod {}; // {}{}", name, new_crc, line_ending));
         } else {
             println!("CRC Matches for {}.proto not re-building.", name);
         }
@@ -46,6 +56,7 @@ fn main() {
 
     if changed {
         // Write new checksums to file
-        write("src/lib.rs", lib_str).unwrap();
+        let mut file = File::create("src/lib.rs").unwrap();
+        file.write_all(lib_str.as_bytes()).unwrap();
     }
 }
