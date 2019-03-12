@@ -6,6 +6,7 @@ use std::process::exit;
 
 pub struct RodioSink {
     rodio_sink: rodio::Sink,
+    rodio_device: rodio::Device,
 }
 
 fn list_formats(ref device: &rodio::Device) {
@@ -80,6 +81,7 @@ impl Open for RodioSink {
         let sink = rodio::Sink::new(&rodio_device);
 
         RodioSink {
+            rodio_device: rodio_device,
             rodio_sink: sink,
         }
     }
@@ -87,15 +89,27 @@ impl Open for RodioSink {
 
 impl Sink for RodioSink {
     fn start(&mut self) -> io::Result<()> {
-        // More similar to an "unpause" than "play". Doesn't undo "stop".
+        // Really an "unpause". Doesn't undo "stop".
         // self.rodio_sink.play();
+
+        // Will cause the existing sink to get finalized (and stop it if it
+        // hasn't already... thereby making a fuzz sound).
+        self.rodio_sink = rodio::Sink::new(&self.rodio_device);
         Ok(())
     }
 
     fn stop(&mut self) -> io::Result<()> {
         // This will immediately stop playback, but the sink is then unusable.
+        // It also makes a short fuzz noise when used.
+        self.rodio_sink.stop();
+
+        // Just makes the sink fuzz.
+        // self.rodio_sink.set_volume(0.0);
+
+        // This will still fuzz when it gets finalized (be being replaced in play()).
+        // self.rodio_sink.pause();
+
         // We just have to let the current buffer play till the end.
-        // self.rodio_sink.stop();
         Ok(())
     }
 
