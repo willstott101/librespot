@@ -1,13 +1,16 @@
 use super::{Open, Sink};
 extern crate rodio;
+extern crate cpal;
+use self::rodio::Source;
+
 use std::time::Duration;
 use std::io;
 use std::process::exit;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 pub struct RodioSink {
-    rodio_sink: rodio::Sink,
-    send: Option<SyncSender<i16>>,
+    rodio_device: rodio::Device,
+    send: SyncSender<i16>,
 }
 
 fn list_outputs() {
@@ -62,10 +65,10 @@ impl Open for RodioSink {
             }
         }
 
-        let sink = rodio::Sink::new(&rodio_device);
+        let (tx, _rx) = sync_channel(0);
         let source = RodioSink {
-            rodio_sink: sink,
-            send: None,
+            rodio_device: rodio_device,
+            send: tx, // quick hack so we don't have ot use an Option
         };
 
         source
@@ -74,38 +77,55 @@ impl Open for RodioSink {
 
 impl Sink for RodioSink {
     fn start(&mut self) -> io::Result<()> {
+        info!("Start RodioSink");
         //                  100ms = 2 * 4410
         let (tx, rx) = sync_channel(2 * 4096);
-        self.send = Some(tx);
+        self.send = tx;
         let source = LibrespotSource {
             recv: rx,
         };
-        self.rodio_sink.append(source);
-        self.rodio_sink.play();
+        // source = SamplesConverter {}
+        rodio::play_raw(&self.rodio_device, source.convert_samples());
         Ok(())
     }
 
     fn stop(&mut self) -> io::Result<()> {
-        self.send = None;
+        info!("Stop RodioSink");
+        // self.send = None;
         Ok(())
     }
 
     fn write(&mut self, data: &[i16]) -> io::Result<()> {
-        match self.send {
-            Some(ref sender) => {
-                for s in data.iter() {
-                    let r = sender.send(*s);
-                    if r.is_err() {
-                        return Err(io::Error::new(io::ErrorKind::BrokenPipe, "Rodio Sink: Reciever disconnected."));
-                    } else {
-                        r.unwrap();
-                    }
-                }
-            },
-            None => (),
+        info!("Trying send {}", data.len());
+        for s in data.iter() {
+            let r = self.send.send(*s);
+            if r.is_err() {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "Rodio Sink: Reciever disconnected."));
+            } else {
+                r.unwrap();
+            }
         }
+        info!("Sent {}", data.len());
         Ok(())
     }
+
+    // fn write(&mut self, data: &[i16]) -> io::Result<()> {
+    //     match self.send {
+    //         Some(ref sender) => {
+    //             for s in data.iter() {
+    //                 let r = sender.send(*s);
+    //                 if r.is_err() {
+    //                     return Err(io::Error::new(io::ErrorKind::BrokenPipe, "Rodio Sink: Reciever disconnected."));
+    //                 } else {
+    //                     r.unwrap();
+    //                 }
+    //             }
+    //         },
+    //         None => (),
+    //     }
+    //     Ok(())
+    // }
+
 }
 
 
@@ -118,8 +138,7 @@ impl Iterator for LibrespotSource {
 
     #[inline]
     fn next(&mut self) -> Option<i16> {
-        let mut queue_iter = self.recv.try_iter();
-        queue_iter.next()
+        Some(self.recv.iter().next().unwrap_or(0))
     }
 }
 
