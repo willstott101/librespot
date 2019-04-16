@@ -100,7 +100,7 @@ impl Sink for RodioSink {
 
     fn stop(&mut self) -> io::Result<()> {
         info!("Stop RodioSink");
-        self.stopped.store(false, Ordering::Relaxed);
+        self.stopped.store(true, Ordering::Relaxed);
         Ok(())
     }
 
