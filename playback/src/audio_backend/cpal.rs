@@ -25,7 +25,7 @@ fn list_formats(ref device: &cpal::Device) {
     let default_fmt = match device.default_output_format() {
         Ok(fmt) => cpal::SupportedFormat::from(fmt),
         Err(e) => {
-            warn!("Error getting default rodio::Sink format: {:?}", e);
+            warn!("Error getting default cpal::Device format: {:?}", e);
             return;
         },
     };
@@ -33,7 +33,7 @@ fn list_formats(ref device: &cpal::Device) {
     let mut output_formats = match device.supported_output_formats() {
         Ok(f) => f.peekable(),
         Err(e) => {
-            warn!("Error getting supported rodio::Sink formats: {:?}", e);
+            warn!("Error getting supported cpal::Device formats: {:?}", e);
             return;
         },
     };
@@ -138,7 +138,6 @@ impl Open for CpalSink {
 
 impl Sink for CpalSink {
     fn start(&mut self) -> io::Result<()> {
-        // info!("CpalSink.start");
         let device = match_output(self.device_name.clone());
         let format = device.default_output_format().unwrap();
         let stream_id = self.event_loop.build_output_stream(&device, &format).unwrap();
@@ -158,11 +157,9 @@ impl Sink for CpalSink {
     }
 
     fn stop(&mut self) -> io::Result<()> {
-        // info!("CpalSink.stop");
         match self.stream_id.clone() {
             Some(stream_id) => {
                 self.event_loop.destroy_stream(stream_id);
-                // info!("CpalSink destroyed");
                 self.stream_id = None;
             },
             None => (),
