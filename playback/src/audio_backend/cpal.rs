@@ -97,8 +97,8 @@ impl Open for CpalSink {
             exit(0)
         }
 
-        // buffer for samples from librespot (~30ms)
-        let rb = RingBuffer::<i16>::new(6 * 1024 * 4);
+        // buffer for samples from librespot (~100ms)
+        let rb = RingBuffer::<i16>::new(10 * 2 * 441);
         let (tx, mut rx) = rb.split();
 
         let event_loop = Arc::new(cpal::EventLoop::new());
