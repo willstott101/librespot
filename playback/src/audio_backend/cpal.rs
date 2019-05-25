@@ -1,11 +1,12 @@
 use super::{Open, Sink};
 extern crate sample;
 extern crate cpal;
-use std::{io, thread};
+extern crate ringbuf;
+use std::{io, thread, time};
 use std::process::exit;
-use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc};
 
+use self::ringbuf::{RingBuffer, Producer};
 use self::sample::{interpolate, signal, Sample, Signal};
 
 struct ResampleParams {
@@ -17,7 +18,7 @@ pub struct CpalSink {
     device_name: Option<String>,
     event_loop: Arc<cpal::EventLoop>,
     stream_id: Option<cpal::StreamId>,
-    send: SyncSender<i16>,
+    send: Producer<i16>,
     resample: Option<ResampleParams>,
 }
 
@@ -96,8 +97,9 @@ impl Open for CpalSink {
             exit(0)
         }
 
-        // buffer for samples from librespot (~10ms)
-        let (tx, rx) = sync_channel::<i16>(2 * 1024 * 4);
+        // buffer for samples from librespot (~30ms)
+        let rb = RingBuffer::<i16>::new(6 * 1024 * 4);
+        let (tx, mut rx) = rb.split();
 
         let event_loop = Arc::new(cpal::EventLoop::new());
 
@@ -107,18 +109,30 @@ impl Open for CpalSink {
             ev2.run(move |_stream_id, stream_data| {
                 match stream_data {
                     cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::I16(mut buffer) } => {
-                        for (sample, recv) in buffer.iter_mut().zip(rx.try_iter()) {
-                            *sample = recv;
+                        println!("ev2 data: I16");
+                        match rx.pop_slice(&mut buffer) {
+                            Ok(_) => (),
+                            Err(_) => (),
                         }
                     },
                     cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::U16(mut buffer) } => {
-                        for (sample, recv) in buffer.iter_mut().zip(rx.try_iter()) {
-                            *sample = recv.to_sample::<u16>();
+                        for sample in buffer.iter_mut() {
+                            match rx.pop() {
+                                Ok(v) => *sample = v.to_sample::<u16>(),
+                                Err(_) => {
+                                    break;
+                                },
+                            }
                         }
                     },
                     cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::F32(mut buffer) } => {
-                        for (sample, recv) in buffer.iter_mut().zip(rx.try_iter()) {
-                            *sample = recv.to_sample::<f32>();
+                        for sample in buffer.iter_mut() {
+                            match rx.pop() {
+                                Ok(v) => *sample = v.to_sample::<f32>(),
+                                Err(_) => {
+                                    break;
+                                },
+                            }
                         }
                     },
                     _ => (),
@@ -168,12 +182,22 @@ impl Sink for CpalSink {
     }
 
     fn write(&mut self, data: &[i16]) -> io::Result<()> {
+        // info!("write");
         match self.resample {
             None => {
-                for s in data {
-                    let res = self.send.send(*s);
-                    if res.is_err() {
-                        error!("cpal: cannot write to channel");
+                let mut start = 0 as usize;
+                loop
+                {
+                    match self.send.push_slice(&data[start..]) {
+                        Ok(cnt) => {
+                            if (start + cnt) < data.len() {
+                                start += cnt;
+                            }
+                            else {
+                                break;
+                            }
+                        },
+                        _ => thread::sleep(time::Duration::from_millis(10)),
                     }
                 }
             },
@@ -188,13 +212,18 @@ impl Sink for CpalSink {
 
                 // Send to the the reciever.
                 for frame in new_signal.until_exhausted() {
-                    let res = self.send.send(frame[0]);
-                    if res.is_err() {
-                        error!("cpal: cannot write to channel");
+                    loop
+                    {
+                        match self.send.push(frame[0]) {
+                            Ok(_) => break,
+                            Err(_) => thread::sleep(time::Duration::from_millis(10)),
+                        }
                     }
-                    let res = self.send.send(frame[1]);
-                    if res.is_err() {
-                        error!("cpal: cannot write to channel");
+                    loop {
+                        match self.send.push(frame[1]) {
+                            Ok(_) => break,
+                            Err(_) => thread::sleep(time::Duration::from_millis(10)),
+                        }
                     }
                     // Store final frame for seamless interpolation into the next chunk.
                     params.last_frame = frame;
