@@ -62,7 +62,7 @@ alsa-backend = ["librespot-playback/alsa-backend"]
 portaudio-backend = ["librespot-playback/portaudio-backend"]
 pulseaudio-backend = ["librespot-playback/pulseaudio-backend"]
 jackaudio-backend = ["librespot-playback/jackaudio-backend"]
-rodio-backend = ["librespot-playback/rodio-backend"]
+cpal-backend = ["librespot-playback/cpal-backend"]
 sdl-backend = ["librespot-playback/sdl-backend"]
 
 with-tremor = ["librespot-audio/with-tremor"]
@@ -70,7 +70,7 @@ with-vorbis = ["librespot-audio/with-vorbis"]
 
 with-dns-sd = ["librespot-connect/with-dns-sd"]
 
-default = ["librespot-playback/rodio-backend"]
+default = ["librespot-playback/cpal-backend"]
 
 [package.metadata.deb]
 maintainer = "librespot-org"
