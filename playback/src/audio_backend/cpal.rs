@@ -1,11 +1,13 @@
 use super::{Open, Sink};
 extern crate sample;
 extern crate cpal;
+extern crate rb;
 use std::io;
+use std::io::{Error, ErrorKind};
 use std::process::exit;
-use std::sync::mpsc::{sync_channel, SyncSender};
 use audio_backend::cpal::cpal::traits::{DeviceTrait, StreamTrait, HostTrait};
 
+use self::rb::*;
 use self::sample::{interpolate, signal, Sample, Signal};
 
 struct ResampleParams {
@@ -15,8 +17,8 @@ struct ResampleParams {
 
 #[allow(dead_code)]
 struct PlaybackParams {
-    stream: cpal::Stream, // Only kept as Drop is implemented.
-    send: SyncSender<i16>,
+    stream: cpal::Stream, // Only kept to trigger Drop at the right time.
+    send: rb::Producer<i16>,
     resample: Option<ResampleParams>,
 }
 
@@ -121,29 +123,60 @@ impl Sink for CpalSink {
         let format = device.default_output_format().unwrap();
 
         // buffer for samples from librespot (~10ms)
-        let (send, rx) = sync_channel::<i16>(2 * 1024 * 4);
+        let rb = SpscRb::new(2 * 1024 * 4);
+        let (send, rx) = (rb.producer(), rb.consumer());
 
         let stream = device.build_output_stream(&format, move |data| {
+            let mut underrun = false;
+            let mut size = 0;
+            let mut got = 0;
             match data {
                 cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::I16(mut buffer) } => {
-                    for sample in buffer.iter_mut() {
-                        let recv = rx.try_recv().unwrap_or(0);
-                        *sample = recv;
+                    size = buffer.len();
+                    got = match rx.read(&mut buffer) {
+                        Ok(cnt) => cnt,
+                        Err(_) => 0,
+                    };
+                    underrun = got < size;
+                    for sample in buffer[got..].iter_mut() {
+                        *sample = 0;
                     }
                 },
                 cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::U16(mut buffer) } => {
-                    for sample in buffer.iter_mut() {
-                        let recv = rx.try_recv().unwrap_or(0);
-                        *sample = recv.to_sample::<u16>();
+                    size = buffer.len();
+                    let mut intermediate = vec![0i16; size];
+                    let got = match rx.read(&mut intermediate) {
+                        Ok(cnt) => cnt,
+                        Err(_) => 0,
+                    };
+                    underrun = got < size;
+                    for (dst, src) in buffer[..got].iter_mut().zip(intermediate) {
+                        *dst = src.to_sample::<u16>();
                     }
+                    for sample in buffer[got..].iter_mut() {
+                        *sample = 0;
+                    }
+
                 },
                 cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::F32(mut buffer) } => {
-                    for sample in buffer.iter_mut() {
-                        let recv = rx.try_recv().unwrap_or(0);
-                        *sample = recv.to_sample::<f32>();
+                    size = buffer.len();
+                    let mut intermediate = vec![0i16; size];
+                    let got = match rx.read(&mut intermediate) {
+                        Ok(cnt) => cnt,
+                        Err(_) => 0,
+                    };
+                    underrun = got < size;
+                    for (dst, src) in buffer[..got].iter_mut().zip(intermediate) {
+                        *dst = src.to_sample::<f32>();
+                    }
+                    for sample in buffer[got..].iter_mut() {
+                        *sample = 0.0;
                     }
                 },
                 _ => (),
+            }
+            if underrun {
+                eprintln!("cpal: stream underrun: {}/{}", got, size);
             }
         }, move |err| {
             eprintln!("an error occurred on stream: {}", err);
@@ -183,12 +216,7 @@ impl Sink for CpalSink {
             Some(pb) => {
                 match pb.resample {
                     None => {
-                        for s in data {
-                            let res = pb.send.send(*s);
-                            if res.is_err() {
-                                error!("cpal: cannot write to channel");
-                            }
-                        }
+                        write_blocking(&pb.send, data)
                     },
                     Some(ref mut params) => {
                         // Copy the decoded audio into a Signal.
@@ -199,24 +227,25 @@ impl Sink for CpalSink {
                         // Interpolate into a new Signal object.
                         let new_signal = signal.from_hz_to_hz(interpolator, 44100 as f64, params.target_sample_rate);
 
-                        // Send to the the reciever.
-                        for frame in new_signal.until_exhausted() {
-                            let res = pb.send.send(frame[0]);
-                            if res.is_err() {
-                                error!("cpal: cannot write to channel");
-                            }
-                            let res = pb.send.send(frame[1]);
-                            if res.is_err() {
-                                error!("cpal: cannot write to channel");
-                            }
-                            // Store final frame for seamless interpolation into the next chunk.
-                            params.last_frame = frame;
-                        }
+                        let interlaced : Vec<i16> = new_signal.until_exhausted().map(|f| f.to_vec()).flatten().collect();
+                        write_blocking(&pb.send, &interlaced)
                     },
-                };
+                }
             },
-            None => (),
+            None => Ok(()),
         }
-        Ok(())
+    }
+}
+
+fn write_blocking(send: &rb::Producer<i16>, data: &[i16]) -> io::Result<()> {
+    match send.write_blocking(data) {
+        Some(cnt) => {
+            if cnt < data.len() {
+                write_blocking(send, &data[cnt..])
+            } else {
+                Ok(())
+            }
+        },
+        None => Err(Error::new(ErrorKind::BrokenPipe, "cpal: RingBuffer not accepting values"))
     }
 }

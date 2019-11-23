@@ -27,6 +27,7 @@ jack            = { version = "0.5.3", optional = true }
 libc            = { version = "0.2", optional = true }
 cpal            = { git = "https://github.com/ishitatsuyuki/cpal", branch = "no-eventloop", optional = true }
 sample          = { version = "0.10", optional = true }
+rb              = { version = "0.3.2", optional = true }
 sdl2            = { version = "0.32", optional = true }
 
 [features]
@@ -34,5 +35,5 @@ alsa-backend = ["alsa"]
 portaudio-backend = ["portaudio-rs"]
 pulseaudio-backend = ["libpulse-sys", "libc"]
 jackaudio-backend = ["jack"]
-cpal-backend = ["cpal", "sample"]
+cpal-backend = ["cpal", "sample", "rb"]
 sdl-backend = ["sdl2"]
